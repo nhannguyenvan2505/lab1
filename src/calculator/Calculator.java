@@ -23,6 +23,9 @@ import javax.swing.KeyStroke;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import javax.swing.Timer;
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
+import java.awt.datatransfer.Clipboard;
 
 public class Calculator extends JFrame {
 
@@ -38,6 +41,7 @@ public class Calculator extends JFrame {
     private boolean isDarkMode = false; // Chế độ giao diện (Light Mode mặc định)
     private JPanel mainPanel;
     private JPanel historyPanel; // Tham chiếu đến bảng lịch sử
+    private long lastMinusButtonEventTime = 0;
     private Color backgroundColor;
     private Color buttonColor;
     private Color operatorColor;
@@ -51,9 +55,10 @@ public class Calculator extends JFrame {
     private String currentOperation = "";
     private boolean isNewNumber = true;
     private long lastMinusEventTime = 0;
-    private static final long EVENT_THRESHOLD_MS = 50;
+    private static final long EVENT_THRESHOLD_MS = 200;
     private ArrayList<String> history = new ArrayList<>();
     private String pendingOperation = "";
+    private String firstNumber = "";
 
     private DecimalFormat df = new DecimalFormat("#,##0.######");
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss");
@@ -155,7 +160,7 @@ public class Calculator extends JFrame {
         previousOperationLabel.setForeground(textColor);
         previousOperationLabel.setHorizontalAlignment(SwingConstants.RIGHT);
 
-        displayField = new JTextField("0");
+        displayField = new JTextField("");
         displayField.setFont(displayFont);
         displayField.setHorizontalAlignment(JTextField.RIGHT);
         displayField.setEditable(true); // Giữ editable để hỗ trợ con trỏ
@@ -223,6 +228,18 @@ public class Calculator extends JFrame {
         JPanel searchPanel = new JPanel(new BorderLayout(5, 0));
         searchPanel.setOpaque(false);
         JTextField searchField = new JTextField();
+        displayField.setFont(new Font("Segoe UI", Font.PLAIN, 24));
+        displayField.setHorizontalAlignment(JTextField.RIGHT);
+
+// Ngăn JTextField chèn ký tự '-' khi bạn đã xử lý qua inputMap
+        displayField.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_MINUS) {
+                    e.consume();
+                }
+            }
+        });
         searchField.setFont(new Font("Segoe UI", Font.PLAIN, 14));
         searchField.setBorder(BorderFactory.createLineBorder(isDarkMode ? new Color(80, 80, 80) : new Color(180, 180, 180), 1, true));
         searchField.setToolTipText("Nhập để tìm kiếm lịch sử...");
@@ -336,11 +353,12 @@ public class Calculator extends JFrame {
     }
 
     private JPanel createButtonPanel() {
-        // Tạo panel chứa các nút chức năng và số
+        // GHI CHÚ: Panel chính chứa các nút, chia thành panel chức năng (AC, CE, √,...) và panel số/toán tử
         JPanel mainButtonPanel = new JPanel(new BorderLayout(5, 5));
         mainButtonPanel.setBackground(backgroundColor);
 
-        JPanel functionPanel = new JPanel(new GridLayout(2, 5, 5, 5)); // SỬA ĐỔI: Tăng cột thành 5 để chứa CE, ←, →
+        // Tăng số cột để chứa thêm nút Deg→Rad và Rad→Deg
+        JPanel functionPanel = new JPanel(new GridLayout(2, 7, 5, 5)); // Thay đổi từ 5 cột thành 7 cột
         functionPanel.setBackground(backgroundColor);
         addButton(functionPanel, "AC", e -> clearAll());
         addButton(functionPanel, "CE", e -> clearEntry());
@@ -355,6 +373,15 @@ public class Calculator extends JFrame {
         addButton(functionPanel, "cos", e -> unaryOperation("cos"));
         addButton(functionPanel, "tan", e -> unaryOperation("tan"));
         addButton(functionPanel, "cot", e -> unaryOperation("cot"));
+        // GHI CHÚ: Thêm nút chuyển đổi Độ sang Radian và Radian sang Độ
+        addButton(functionPanel, "Deg→Rad", e -> unaryOperation("Deg→Rad"));
+        addButton(functionPanel, "Rad→Deg", e -> unaryOperation("Rad→Deg"));
+        addButton(functionPanel, "Copy", e -> {
+            // GHI CHÚ: Sao chép nội dung trường hiển thị vào clipboard
+            StringSelection stringSelection = new StringSelection(displayField.getText());
+            Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+            clipboard.setContents(stringSelection, null);
+        });
 
         JPanel numberPanel = new JPanel(new GridLayout(5, 4, 5, 5));
         numberPanel.setBackground(backgroundColor);
@@ -373,13 +400,41 @@ public class Calculator extends JFrame {
         addButton(numberPanel, "2", e -> appendNumber("2"));
         addButton(numberPanel, "3", e -> appendNumber("3"));
         addButton(numberPanel, "-", e -> {
+            long currentTime = System.currentTimeMillis();
+            if (currentTime - lastMinusButtonEventTime < EVENT_THRESHOLD_MS) {
+                return; // Bỏ qua nếu sự kiện chuột quá gần nhau
+            }
+            lastMinusButtonEventTime = currentTime;
+
             String currentText = displayField.getText();
-            if (isNewNumber || currentText.isEmpty() || currentText.equals("0") || (!pendingOperation.isEmpty() && pendingOperation.equals("√"))) {
+            int caretPosition = displayField.getCaretPosition();
+
+            if (currentText.equals("-") && caretPosition == 1) {
+                // Nếu đã có "-" và nhấn "-" lần nữa, triệt tiêu thành "0"
+                displayField.setText("0");
+                negativeCount = 0;
+                isNewNumber = true;
+                displayField.setCaretPosition(0);
+                updateLiveResult();
+                flashDisplay();
+            } else if (currentText.startsWith("-") && caretPosition <= 1) {
+                // Xóa dấu trừ để hiển thị số dương
+                String newText = currentText.substring(1);
+                displayField.setText(newText.isEmpty() ? "0" : newText);
+                negativeCount = 0;
+                isNewNumber = newText.isEmpty();
+                displayField.setCaretPosition(0);
+                updateLiveResult();
+                flashDisplay();
+            } else if (currentText.isEmpty() || currentText.equals("0") || (!pendingOperation.isEmpty() && pendingOperation.equals("√"))) {
                 appendNumber("-");
+                flashDisplay();
             } else if (isValidNumber(currentText)) {
                 setOperation("-");
+                flashDisplay();
             } else {
                 showError("Vui lòng nhập số hợp lệ!");
+                flashDisplay();
             }
         });
 
@@ -474,74 +529,126 @@ public class Calculator extends JFrame {
     private void appendNumber(String number) {
         System.out.println("Đang thêm số: " + number);
         String currentText = displayField.getText();
-        int caretPosition = displayField.getCaretPosition();
+        int caretPosition = Math.min(displayField.getCaretPosition(), currentText.length());
+        System.out.println("appendNumber: currentText='" + currentText + "', caretPosition=" + caretPosition + ", negativeCount=" + negativeCount);
 
-        if ("0123456789.-".contains(number)) {
-            StringBuilder newText = new StringBuilder(currentText);
-
-           if (number.equals("-")) {
-    System.out.println("appendNumber(-): currentText='" + currentText + "', caretPosition=" + caretPosition + ", negativeCount=" + negativeCount);
-    String resultText;
-    if (currentText.equals("-")) {
-        // Nhấn - khi đã có - → triệt tiêu
-        resultText = "";
-        negativeCount--;
-    } else {
-        // Thêm hoặc xóa dấu trừ ở đầu, bất kể caretPosition
-        if (currentText.startsWith("-")) {
-            // Xóa dấu trừ
-            newText.deleteCharAt(0);
-            negativeCount--;
-        } else {
-            // Thêm dấu trừ ở đầu
-            newText.insert(0, "-");
-            negativeCount++;
+        // Nếu không phải số, dấu chấm hoặc dấu trừ thì bỏ qua
+        if (!"0123456789.-".contains(number)) {
+            showError("Dữ liệu không hợp lệ!");
+            flashDisplay();
+            return;
         }
-        resultText = newText.toString();
-    }
-    System.out.println("appendNumber(-): resultText='" + resultText + "', new negativeCount=" + negativeCount);
-    displayField.setText(resultText);
-    // Đặt caretPosition an toàn
-    int newCaretPosition = resultText.startsWith("-") ? 1 : 0;
-    if (newCaretPosition > resultText.length()) {
-        newCaretPosition = resultText.length();
-    }
-    displayField.setCaretPosition(newCaretPosition);
-    isNewNumber = resultText.length() <= 1; // Chuỗi chỉ có "-" hoặc rỗng
-    updateLiveResult();
-    return;
-}
 
-            if (number.equals(".")) {
-                if (currentText.contains(".")) {
-                    showError("Số đã có dấu chấm!");
-                    return;
-                }
-                if (currentText.isEmpty() || currentText.equals("-")) {
-                    newText.append("0.");
-                    displayField.setText(newText.toString());
-                    displayField.setCaretPosition(newText.length());
-                    isNewNumber = false;
-                    updateLiveResult();
-                    return;
-                }
-            }
+        StringBuilder newText = new StringBuilder(currentText);
 
-            // Chèn số tại vị trí con trỏ
-            newText.insert(caretPosition, number);
-            String resultText = newText.toString();
-            if (isValidNumber(resultText)) {
-                displayField.setText(resultText);
-                displayField.setCaretPosition(caretPosition + 1);
-                isNewNumber = false;
-            } else {
-                showError("Dữ liệu không hợp lệ!");
+        // Xử lý dấu trừ "-"
+        if (number.equals("-")) {
+            // Kiểm tra nếu currentText chỉ gồm toàn dấu '-'
+            if (currentText.matches("-+")) {
+                int dashCount = currentText.length();
+
+                if (dashCount % 2 == 0) {
+                    // Số lượng dấu trừ chẵn => thành phép cộng "+"
+                    setOperation("+");
+                } else {
+                    // Số lượng dấu trừ lẻ => thành phép trừ "-"
+                    setOperation("-");
+                }
+                flashDisplay();
                 return;
             }
+
+            if (currentText.equals("-")) {
+                displayField.setText("0");
+                displayField.setCaretPosition(0);
+                negativeCount = 0;
+                isNewNumber = true;
+                updateLiveResult();
+                flashDisplay();
+                return;
+            }
+
+            if (currentText.startsWith("-") && caretPosition <= 1) {
+                newText.deleteCharAt(0);
+                String result = newText.toString();
+                displayField.setText(result.isEmpty() ? "0" : result);
+                displayField.setCaretPosition(0);
+                negativeCount = 0;
+                isNewNumber = result.isEmpty();
+                updateLiveResult();
+                flashDisplay();
+                return;
+            }
+
+            if (currentText.isEmpty() || currentText.equals("0") || (!pendingOperation.isEmpty() && pendingOperation.equals("√"))) {
+                if (currentText.equals("0")) {
+                    newText.setLength(0); // Xoá "0"
+                }
+                int insertPosition = currentText.isEmpty() ? 0 : caretPosition;
+                newText.insert(insertPosition, "-");
+                String result = newText.toString();
+                displayField.setText(result);
+                displayField.setCaretPosition(insertPosition + 1);
+                negativeCount = 1;
+                isNewNumber = true;
+                updateLiveResult();
+                flashDisplay();
+                return;
+            }
+
+            if (isValidNumber(currentText)) {
+                setOperation("-");
+                flashDisplay();
+            } else {
+                showError("Vui lòng nhập số hợp lệ!");
+                flashDisplay();
+            }
+            return;
+        }
+
+        // Xử lý dấu chấm "."
+        if (number.equals(".")) {
+            if (currentText.contains(".")) {
+                showError("Số đã có dấu chấm!");
+                flashDisplay();
+                return;
+            }
+
+            if (currentText.isEmpty() || currentText.equals("-")) {
+                newText.append("0.");
+                caretPosition = newText.length(); // cập nhật caret về cuối
+            } else {
+                newText.insert(caretPosition, ".");
+                caretPosition++; // cập nhật caret đúng sau dấu chấm
+            }
+
+            String result = newText.toString();
+            if (isValidNumber(result)) {
+                displayField.setText(result);
+                displayField.setCaretPosition(caretPosition);
+                isNewNumber = false;
+                updateLiveResult();
+                flashDisplay();
+            } else {
+                showError("Dữ liệu không hợp lệ!");
+                flashDisplay();
+            }
+            return;
+        }
+
+        // Thêm số bình thường
+        newText.insert(caretPosition, number);
+        String result = newText.toString();
+        if (isValidNumber(result)) {
+            displayField.setText(result);
+            displayField.setCaretPosition(caretPosition + 1);
+            isNewNumber = false;
+            updateLiveResult();
+            flashDisplay();
         } else {
             showError("Dữ liệu không hợp lệ!");
+            flashDisplay();
         }
-        updateLiveResult();
     }
 
     // THÊM MỚI: Phương thức clearEntry
@@ -576,37 +683,23 @@ public class Calculator extends JFrame {
 
     private void setOperation(String operation) {
         String currentText = displayField.getText();
-        if (!isValidNumber(currentText)) {
-            showError("Vui lòng nhập số hợp lệ!");
-            return;
-        }
-
-        try {
-            if (!pendingOperation.isEmpty() && pendingOperation.equals("√")) {
-                showError("Vui lòng nhập số trước khi chọn toán tử!");
-                return;
+        if (!currentText.isEmpty() && isValidNumber(currentText)) {
+            if (!pendingOperation.isEmpty()) {
+                equalButtonAction(); // Tính kết quả trước nếu có phép toán đang chờ
+                currentText = displayField.getText();
             }
-
-            if (!currentOperation.isEmpty()) {
-                double currentNum = parseNumber(currentText);
-                double result = calculate(previousNumber, currentNum, currentOperation);
-                if (validateResult(result)) {
-                    displayField.setText(df.format(result));
-                    previousNumber = result;
-                } else {
-                    return;
-                }
-            } else {
-                previousNumber = parseNumber(currentText);
-            }
-
+            firstNumber = currentText;
             currentOperation = operation;
-            previousOperationLabel.setText(df.format(previousNumber) + " " + operation);
+            pendingOperation = "";
+            displayField.setText("");
             isNewNumber = true;
             negativeCount = 0;
-            displayField.setText("");
-        } catch (NumberFormatException e) {
-            showError("Dữ liệu không hợp lệ!");
+            updateLiveResult();
+        } else if (operation.equals("-") && (currentText.isEmpty() || currentText.equals("0"))) {
+            // Cho phép nhập số âm nếu chưa có gì hoặc đang là 0
+            appendNumber("-");
+        } else {
+            showError("Vui lòng nhập số hợp lệ trước khi chọn toán tử!");
         }
     }
 
@@ -654,6 +747,10 @@ public class Calculator extends JFrame {
                     expression = "(" + df.format(number) + ")²";
                     break;
                 case "n!":
+                    if (number < 0 || number != (int) number) {
+                        showError("Giai thừa chỉ áp dụng cho số nguyên không âm!");
+                        return;
+                    }
                     result = factorial((int) number);
                     expression = "(" + (int) number + ")!";
                     break;
@@ -673,6 +770,16 @@ public class Calculator extends JFrame {
                     result = cot(degreesToRadians(number));
                     expression = "cot(" + df.format(number) + "°)";
                     break;
+                // GHI CHÚ: Chuyển đổi từ Độ sang Radian
+                case "Deg→Rad":
+                    result = degreesToRadians(number);
+                    expression = df.format(number) + "° → rad";
+                    break;
+                // GHI CHÚ: Chuyển đổi từ Radian sang Độ
+                case "Rad→Deg":
+                    result = radiansToDegrees(number);
+                    expression = df.format(number) + " rad → °";
+                    break;
             }
             if (validateResult(result)) {
                 addToHistory(expression, result);
@@ -689,15 +796,20 @@ public class Calculator extends JFrame {
             }
         } catch (NumberFormatException e) {
             showError("Dữ liệu không hợp lệ!");
+        } catch (IllegalArgumentException e) {
+            showError(e.getMessage());
         }
     }
 
-    private long factorial(int n) {
+    private double factorial(int n) {
         if (n < 0) {
             throw new IllegalArgumentException("Giai thừa không được định nghĩa cho số âm.");
         }
-        long result = 1;
-        for (int i = 1; i <= n; i++) {
+        if (n > 170) {
+            throw new ArithmeticException("Số quá lớn! Giai thừa vượt quá giới hạn kiểu double.");
+        }
+        double result = 1;
+        for (int i = 2; i <= n; i++) {
             result *= i;
         }
         return result;
@@ -735,6 +847,22 @@ public class Calculator extends JFrame {
         return Math.toDegrees(radians);
     }
 
+    private boolean validateResult(double result) {
+        if (Double.isNaN(result)) {
+            showError("Kết quả không xác định (NaN)!");
+            return false;
+        }
+        if (Double.isInfinite(result)) {
+            showError("Kết quả vô cực!");
+            return false;
+        }
+        if (Math.abs(result) > 1e308) {
+            showError("Kết quả quá lớn!");
+            return false;
+        }
+        return true;
+    }
+
     private double calculate(double num1, double num2, String operator) {
         double result = 0;
         switch (operator) {
@@ -748,57 +876,53 @@ public class Calculator extends JFrame {
                 result = num1 * num2;
                 break;
             case "÷":
-                if (num2 != 0) {
-                    result = num1 / num2;
-                } else {
+                if (num2 == 0) {
                     showError("Không thể chia cho 0!");
+                    throw new ArithmeticException("Divide by zero");
                 }
+                result = num1 / num2;
                 break;
             case "%":
-                result = num1 / 100;
-                if (num2 != 0) {
-                    result = num1 * num2 / 100;
-                }
+                result = num1 * num2 / 100;
                 break;
+            default:
+                showError("Toán tử không hợp lệ!");
+                throw new IllegalArgumentException("Invalid operator: " + operator);
         }
         return result;
     }
 
-    private boolean validateResult(double result) {
-        if (Double.isInfinite(result)) {
-            showError("Số quá lớn!");
-            return false;
-        }
-        if (Double.isNaN(result)) {
-            showError("Kết quả không hợp lệ!");
-            return false;
-        }
-        return true;
-    }
-
     private void updateLiveResult() {
-        if (!currentOperation.isEmpty()) {
+        if (!currentOperation.isEmpty() && !firstNumber.isEmpty()) {
             try {
-                double currentNum = Double.parseDouble(displayField.getText().replace(",", ""));
+                String currentText = displayField.getText();
+                if (currentText.isEmpty() || currentText.equals("-")) {
+                    resultLabel.setText("");
+                    return;
+                }
+                double currentNum = parseNumber(currentText);
+                double num1 = parseNumber(firstNumber);
                 double result = 0;
 
                 switch (currentOperation) {
                     case "+":
-                        result = previousNumber + currentNum;
+                        result = num1 + currentNum;
                         break;
                     case "-":
-                        result = previousNumber - currentNum;
+                        result = num1 - currentNum;
                         break;
                     case "×":
-                        result = previousNumber * currentNum;
+                        result = num1 * currentNum;
                         break;
                     case "÷":
-                        if (currentNum != 0) {
-                            result = previousNumber / currentNum;
+                        if (currentNum == 0) {
+                            resultLabel.setText("");
+                            return;
                         }
+                        result = num1 / currentNum;
                         break;
                     case "%":
-                        result = previousNumber * currentNum / 100;
+                        result = num1 * currentNum / 100;
                         break;
                 }
 
@@ -1303,110 +1427,114 @@ public class Calculator extends JFrame {
 
     private void equalButtonAction() {
         try {
+            String currentText = displayField.getText();
+            if (currentText.isEmpty() || currentText.equals("-")) {
+                showError("Vui lòng nhập số!");
+                return;
+            }
+// Kiểm tra nếu đầu vào chứa nhiều toán tử hoặc dấu ngoặc
+
             if (!pendingOperation.isEmpty()) {
-                String currentText = displayField.getText().replace(",", "");
-                if (currentText.isEmpty() || currentText.equals("-")) {
-                    showError("Vui lòng nhập số!");
-                    return;
-                }
-                double currentNum = Double.parseDouble(currentText);
+                double currentNum = parseNumber(currentText);
                 double result = 0;
                 String expression = "";
 
-                if (pendingOperation.equals("√")) {
-                    if (currentNum < 0) {
-                        showError("Không thể tính căn bậc hai của số âm!");
+                switch (pendingOperation) {
+                    case "√":
+                        if (currentNum < 0) {
+                            showError("Không thể tính căn bậc hai của số âm!");
+                            return;
+                        }
+                        result = Math.sqrt(currentNum);
+                        expression = "√(" + df.format(currentNum) + ")";
+                        break;
+                    case "log₁₀":
+                        if (currentNum <= 0) {
+                            showError("Không thể tính log₁₀ của số không dương!");
+                            return;
+                        }
+                        result = logBase10(currentNum);
+                        expression = "log₁₀(" + df.format(currentNum) + ")";
+                        break;
+                    case "ln":
+                        if (currentNum <= 0) {
+                            showError("Không thể tính ln của số không dương!");
+                            return;
+                        }
+                        result = naturalLog(currentNum);
+                        expression = "ln(" + df.format(currentNum) + ")";
+                        break;
+                    default:
+                        showError("Toán tử không hợp lệ!");
                         return;
-                    }
-                    result = Math.sqrt(currentNum);
-                    expression = "√(" + df.format(currentNum) + ")";
-                } else if (pendingOperation.equals("log₁₀")) {
-                    if (currentNum <= 0) {
-                        showError("Không thể tính log₁₀ của số không dương!");
-                        return;
-                    }
-                    result = logBase10(currentNum);
-                    expression = "log₁₀(" + df.format(currentNum) + ")";
-                } else if (pendingOperation.equals("ln")) {
-                    if (currentNum <= 0) {
-                        showError("Không thể tính ln của số không dương!");
-                        return;
-                    }
-                    result = naturalLog(currentNum);
-                    expression = "ln(" + df.format(currentNum) + ")";
                 }
 
                 if (validateResult(result)) {
                     addToHistory(expression, result);
-                    if (result % 1 == 0) {
-                        resultLabel.setText("= " + String.format("%,d", (long) result));
-                    } else {
-                        resultLabel.setText("= " + df.format(result));
-                    }
+                    displayField.setText(formatResult(result));
                     previousOperationLabel.setText("");
+                    resultLabel.setText("");
                     pendingOperation = "";
                     currentOperation = "";
                     isNewNumber = true;
-                    negativeCount = 0;
+                    negativeCount = result < 0 ? 1 : 0;
                 }
                 return;
             }
 
-            if (!currentOperation.isEmpty()) {
-                String currentText = displayField.getText().replace(",", "");
-                double currentNum;
-                if (currentText.isEmpty() || currentText.equals("-")) {
-                    currentNum = (currentOperation.equals("%")) ? 0 : Double.parseDouble("0");
-                } else {
-                    currentNum = Double.parseDouble(currentText);
-                }
-                double result = calculate(previousNumber, currentNum, currentOperation);
+            if (!currentOperation.isEmpty() && !firstNumber.isEmpty()) {
+                double num1 = parseNumber(firstNumber);
+                double num2 = parseNumber(currentText);
+                double result = calculate(num1, num2, currentOperation);
+
                 if (validateResult(result)) {
-                    String expression;
-                    if (currentOperation.equals("%") && currentNum == 0) {
-                        expression = df.format(previousNumber) + "%";
-                    } else {
-                        expression = df.format(previousNumber) + " " + currentOperation + " " + df.format(currentNum);
-                    }
+                    String expression = df.format(num1) + currentOperation + (num2 < 0 ? "(" + df.format(num2) + ")" : df.format(num2));
                     addToHistory(expression, result);
-                    if (result % 1 == 0) {
-                        resultLabel.setText("= " + String.format("%,d", (long) result));
-                    } else {
-                        resultLabel.setText("= " + df.format(result));
-                    }
+                    displayField.setText(formatResult(result));
+                    firstNumber = formatResult(result);
                     previousOperationLabel.setText("");
+                    resultLabel.setText("");
                     currentOperation = "";
+                    pendingOperation = "";
                     isNewNumber = true;
-                    negativeCount = 0;
+                    negativeCount = result < 0 ? 1 : 0;
                 }
             } else {
-                String currentText = displayField.getText().replace(",", "");
-                if (currentText.isEmpty() || currentText.equals("-")) {
-                    showError("Vui lòng nhập số!");
-                    return;
-                }
-                double currentNum = Double.parseDouble(currentText);
+                double currentNum = parseNumber(currentText);
                 if (validateResult(currentNum)) {
                     String expression = df.format(currentNum);
                     addToHistory(expression, currentNum);
-                    if (currentNum % 1 == 0) {
-                        resultLabel.setText("= " + String.format("%,d", (long) currentNum));
-                    } else {
-                        resultLabel.setText("= " + df.format(currentNum));
-                    }
+                    displayField.setText(formatResult(currentNum));
+                    firstNumber = formatResult(currentNum);
+                    previousOperationLabel.setText("");
+                    resultLabel.setText("");
+                    isNewNumber = true;
+                    negativeCount = currentNum < 0 ? 1 : 0;
                 }
             }
         } catch (NumberFormatException ex) {
             showError("Dữ liệu không hợp lệ!");
+        } catch (ArithmeticException | IllegalArgumentException ex) {
+            // Lỗi đã được hiển thị trong calculate()
         }
     }
 
-    private boolean isValidNumber(String text) {
-        if (text == null || text.isEmpty()) {
+// Thêm phương thức hỗ trợ định dạng kết quả
+    private String formatResult(double result) {
+        if (result % 1 == 0) {
+            return String.format("%d", (long) result);
+        } else {
+            return df.format(result);
+        }
+    }
+
+    private boolean isValidNumber(String token) {
+        try {
+            Double.parseDouble(token);
+            return true;
+        } catch (NumberFormatException e) {
             return false;
         }
-        String cleanText = text.replace(",", "");
-        return cleanText.matches("-?\\d*\\.?\\d*") && !cleanText.equals("-") && !cleanText.equals(".") && !cleanText.equals("-.");
     }
 
     private double parseNumber(String text) throws NumberFormatException {
@@ -1469,20 +1597,76 @@ public class Calculator extends JFrame {
 
         // Toán tử: -
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0), "minus");
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, 0), "minus");
         actionMap.put("minus", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastMinusEventTime < 300) { // Tăng lên 300ms để ngăn sự kiện lặp
+                    return; // Bỏ qua nếu sự kiện quá gần nhau
+                }
+                lastMinusEventTime = currentTime;
+
                 String currentText = displayField.getText();
                 int caretPosition = displayField.getCaretPosition();
-                System.out.println("Phím trừ: currentText='" + currentText + "', caretPosition=" + caretPosition + ", isNewNumber=" + isNewNumber);
-                if (currentText.isEmpty() || currentText.equals("0") || (!pendingOperation.isEmpty() && pendingOperation.equals("√"))) {
+                // Đảm bảo caretPosition hợp lệ
+                caretPosition = Math.min(caretPosition, currentText.length());
+                System.out.println("Phím minus pressed: currentText='" + currentText + "', caretPosition=" + caretPosition + ", negativeCount=" + negativeCount);
+
+                // Kiểm tra chuỗi currentText có phải là dấu "-" liên tiếp không
+                if (currentText.matches("-+")) {
+                    int dashCount = currentText.length();
+
+                    if (dashCount % 2 == 0) {
+                        // Số lượng dấu trừ chẵn => thành phép cộng "+"
+                        setOperation("+");
+                    } else {
+                        // Số lượng dấu trừ lẻ => thành phép trừ "-"
+                        setOperation("-");
+                    }
+                    flashDisplay();
+                    return;
+                }
+
+                // Nếu chỉ có một dấu "-" hiện tại
+                if (currentText.equals("-")) {
+                    // Nếu đã có dấu "-", triệt tiêu thành "0"
+                    displayField.setText("0");
+                    negativeCount = 0;
+                    isNewNumber = true;
+                    displayField.setCaretPosition(0);
+                    updateLiveResult();
+                    flashDisplay();
+                } else if (currentText.startsWith("-") && caretPosition <= 1) {
+                    // Xóa dấu trừ để hiển thị số dương
+                    String newText = currentText.substring(1);
+                    displayField.setText(newText.isEmpty() ? "0" : newText);
+                    negativeCount = 0;
+                    isNewNumber = newText.isEmpty();
+                    displayField.setCaretPosition(0);
+                    updateLiveResult();
+                    flashDisplay();
+                } else if (currentText.isEmpty() || currentText.equals("0") || (!pendingOperation.isEmpty() && pendingOperation.equals("√"))) {
+                    // Thêm dấu trừ cho số âm
                     appendNumber("-");
+                    flashDisplay();
                 } else if (isValidNumber(currentText)) {
+                    // Nếu là số hợp lệ, thực hiện phép trừ
                     setOperation("-");
+                    flashDisplay();
                 } else {
                     showError("Vui lòng nhập số hợp lệ!");
+                    flashDisplay();
                 }
+            }
+        });
+
+        // Hỗ trợ dấu chấm
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_PERIOD, 0), "period");
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_DECIMAL, 0), "period");
+        actionMap.put("period", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                appendNumber(".");
                 flashDisplay();
             }
         });
@@ -1615,6 +1799,26 @@ public class Calculator extends JFrame {
             }
         });
 
+        // GHI CHÚ: Phím tắt cho chuyển đổi Độ sang Radian
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_D, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "degToRad");
+        actionMap.put("degToRad", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                unaryOperation("Deg→Rad");
+                flashDisplay();
+            }
+        });
+
+        // GHI CHÚ: Phím tắt cho chuyển đổi Radian sang Độ
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_R, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "radToDeg");
+        actionMap.put("radToDeg", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                unaryOperation("Rad→Deg");
+                flashDisplay();
+            }
+        });
+
         // Hành động
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "equals");
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, 0), "equals");
@@ -1725,52 +1929,52 @@ public class Calculator extends JFrame {
     }
 
     private void showHelpDialog() {
-        JDialog helpDialog = new JDialog(this, "Phím Tắt", true);
-        helpDialog.setLayout(new BorderLayout(10, 10));
-        helpDialog.setSize(400, 350);
-        helpDialog.setLocationRelativeTo(this);
+    // GHI CHÚ: Hiển thị dialog chứa danh sách phím tắt, bao gồm chuyển đổi góc
+    JDialog helpDialog = new JDialog(this, "Phím Tắt", true);
+    helpDialog.setLayout(new BorderLayout(10, 10));
+    helpDialog.setSize(400, 400); // Tăng kích thước để chứa thêm nội dung
+    helpDialog.setLocationRelativeTo(this);
 
-        JTextArea helpText = new JTextArea(
-                "Danh sách phím tắt:\n"
-                + "0-9: Nhập số\n"
-                + ".: Dấu chấm thập phân\n"
-                + "Shift +: Cộng\n"
-                + "-: Trừ hoặc dấu âm\n"
-                + "Shift + 8: Nhân\n"
-                + "/: Chia\n"
-                + "Shift + 5 hoặc Ctrl + P: Phần trăm\n"
-                + "Enter hoặc =: Tính kết quả\n"
-                + "Ctrl+E: Xóa số hiện tại (CE)\n"
-                + "Backspace: Xóa ký tự trước con trỏ\n"
-                + "Delete: Xóa ký tự sau con trỏ\n"
-                + "Left Arrow: Di chuyển con trỏ sang trái\n"
-                + "Right Arrow: Di chuyển con trỏ sang phải\n"
-                + "C hoặc Esc: Xóa toàn bộ (AC)\n"
-                + "Ctrl+R: Căn bậc hai\n"
-                + "Ctrl+S: Bình phương\n"
-                + "Ctrl+F: Giai thừa\n"
-                + "Ctrl+L: Log₁₀\n"
-                + "Ctrl+N: Ln\n"
-                + "Ctrl+Shift+S: Sin\n"
-                + "Ctrl+Shift+C: Cos\n"
-                + "Ctrl+Shift+T: Tan\n"
-                + "Ctrl+Shift+O: Cot\n"
-                + "Ctrl+H: Xóa lịch sử\n"
-                + "Ctrl+D: Chuyển chế độ tối\n"
-                + "Mũi tên Lên/Xuống: Điều hướng lịch sử\n"
-                + "Ctrl+Delete: Xóa mục lịch sử"
-        );
-        helpText.setEditable(false);
-        helpText.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-        helpDialog.add(new JScrollPane(helpText), BorderLayout.CENTER);
+    JTextArea helpText = new JTextArea(
+            "Danh sách phím tắt:\n"
+            + "0-9: Nhập số\n"
+            + ".: Dấu chấm thập phân\n"
+            + "Shift +: Cộng\n"
+            + "-: Trừ hoặc dấu âm\n"
+            + "Shift + 8: Nhân\n"
+            + "/: Chia\n"
+            + "Shift + 5 hoặc Ctrl + P: Phần trăm\n"
+            + "Enter hoặc =: Tính kết quả\n"
+            + "Ctrl+E: Xóa số hiện tại (CE)\n"
+            + "Backspace: Xóa ký tự trước con trỏ\n"
+            + "Delete hoặc Right Arrow: Xóa ký tự sau con trỏ\n"
+            + "C hoặc Esc: Xóa toàn bộ (AC)\n"
+            + "Ctrl+R: Căn bậc hai\n"
+            + "Ctrl+S: Bình phương\n"
+            + "Ctrl+F: Giai thừa\n"
+            + "Ctrl+L: Log₁₀\n"
+            + "Ctrl+N: Ln\n"
+            + "Ctrl+Shift+S: Sin\n"
+            + "Ctrl+Shift+C: Cos\n"
+            + "Ctrl+Shift+T: Tan\n"
+            + "Ctrl+Shift+O: Cot\n"
+            + "Ctrl+Shift+D: Chuyển Độ sang Radian\n"
+            + "Ctrl+Shift+R: Chuyển Radian sang Độ\n"
+            + "Ctrl+H: Xóa lịch sử\n"
+            + "Ctrl+D: Chuyển chế độ tối\n"
+            + "Mũi tên Lên/Xuống: Điều hướng lịch sử\n"
+            + "Ctrl+Delete: Xóa mục lịch sử"
+    );
+    helpText.setEditable(false);
+    helpText.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+    helpDialog.add(new JScrollPane(helpText), BorderLayout.CENTER);
 
-        JButton closeButton = new JButton("Đóng");
-        closeButton.addActionListener(e -> helpDialog.dispose());
-        helpDialog.add(closeButton, BorderLayout.SOUTH);
+    JButton closeButton = new JButton("Đóng");
+    closeButton.addActionListener(e -> helpDialog.dispose());
+    helpDialog.add(closeButton, BorderLayout.SOUTH);
 
-        helpDialog.setVisible(true);
-    }
-
+    helpDialog.setVisible(true);
+}
     public static void main(String[] args) {
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
